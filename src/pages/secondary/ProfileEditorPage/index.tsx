@@ -28,6 +28,8 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
   const [nip05Error, setNip05Error] = useState<string>('')
   const [lightningAddress, setLightningAddress] = useState<string>('')
   const [lightningAddressError, setLightningAddressError] = useState<string>('')
+  const [arkadeAddress, setArkadeAddress] = useState<string>('')
+  const [arkadeAddressError, setArkadeAddressError] = useState<string>('')
   const [hasChanged, setHasChanged] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploadingBanner, setUploadingBanner] = useState(false)
@@ -46,6 +48,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       setWebsite(profile.website ?? '')
       setNip05(profile.nip05 ?? '')
       setLightningAddress(profile.lightningAddress || '')
+      setArkadeAddress(profile.arkade || '')
     } else {
       setBanner('')
       setAvatar('')
@@ -54,6 +57,7 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       setWebsite('')
       setNip05('')
       setLightningAddress('')
+      setArkadeAddress('')
     }
   }, [profile])
 
@@ -78,26 +82,45 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
       picture: avatar
     }
 
+    // Handle Lightning address
     if (lightningAddress) {
       if (isEmail(lightningAddress)) {
         newProfileContent.lud16 = lightningAddress
+        delete newProfileContent.lud06 // Remove lud06 if lud16 is set
       } else if (lightningAddress.startsWith('lnurl')) {
         newProfileContent.lud06 = lightningAddress
+        delete newProfileContent.lud16 // Remove lud16 if lud06 is set
       } else {
         setLightningAddressError(t('Invalid Lightning Address'))
         return
       }
     } else {
+      // Remove both lud16 and lud06 if no lightning address
       delete newProfileContent.lud16
+      delete newProfileContent.lud06
+    }
+
+    // Handle Arkade address
+    if (arkadeAddress && arkadeAddress.trim()) {
+      if (arkadeAddress.startsWith('ark1')) {
+        newProfileContent.arkade = arkadeAddress.trim()
+      } else {
+        setArkadeAddressError(t('Invalid Arkade Address (must start with ark1)'))
+        return
+      }
+    } else {
+      delete newProfileContent.arkade
     }
 
     setSaving(true)
     setHasChanged(false)
+    console.log('ProfileEditor - Saving profile with content:', newProfileContent)
     const profileDraftEvent = createProfileDraftEvent(
       JSON.stringify(newProfileContent),
       profileEvent?.tags
     )
     const newProfileEvent = await publish(profileDraftEvent)
+    console.log('ProfileEditor - Published new profile event:', newProfileEvent)
     await updateProfileEvent(newProfileEvent)
     setSaving(false)
     pop()
@@ -217,6 +240,23 @@ const ProfileEditorPage = forwardRef(({ index }: { index?: number }, ref) => {
           />
           {lightningAddressError && (
             <div className="text-xs text-destructive pl-3">{lightningAddressError}</div>
+          )}
+        </Item>
+        <Item>
+          <Label htmlFor="profile-arkade-address-input">{t('Arkade Address')}</Label>
+          <Input
+            id="profile-arkade-address-input"
+            placeholder="ark1q..."
+            value={arkadeAddress}
+            onChange={(e) => {
+              setArkadeAddressError('')
+              setArkadeAddress(e.target.value)
+              setHasChanged(true)
+            }}
+            className={arkadeAddressError ? 'border-destructive' : ''}
+          />
+          {arkadeAddressError && (
+            <div className="text-xs text-destructive pl-3">{arkadeAddressError}</div>
           )}
         </Item>
       </div>

@@ -171,6 +171,146 @@ class LightningService {
     })
   }
 
+  async arkadeZap(
+    sender: string,
+    recipientOrEvent: string | NostrEvent,
+    sats: number,
+    comment: string,
+    closeOuterModel?: () => void
+  ): Promise<{ vtxoTxid: string; arkadeAddress: string } | null> {
+    if (!client.signer) {
+      throw new Error('You need to be logged in to zap')
+    }
+    if (!this.provider) {
+      throw new Error('NWC provider required for Arkade zaps. Please connect your Arkade wallet.')
+    }
+
+    const { recipient, event } =
+      typeof recipientOrEvent === 'string'
+        ? { recipient: recipientOrEvent }
+        : { recipient: recipientOrEvent.pubkey, event: recipientOrEvent }
+
+    const [profile, receiptRelayList, senderRelayList] = await Promise.all([
+      client.fetchProfile(recipient, true),
+      client.fetchRelayList(recipient),
+      sender
+        ? client.fetchRelayList(sender)
+        : Promise.resolve({ read: BIG_RELAY_URLS, write: BIG_RELAY_URLS })
+    ])
+
+    if (!profile) {
+      throw new Error('Recipient not found')
+    }
+
+    if (!profile.arkade) {
+      throw new Error("Recipient doesn't have an Arkade address")
+    }
+
+    const arkadeAddress = profile.arkade
+    const amount = sats * 1000 // Convert to millisats
+
+    // Create zap request (kind 9734)
+    // Note: The zap request will be sent by the Arkade wallet NWC server to the relays
+    // after payment is confirmed
+    const zapRequestDraft = makeZapRequest({
+      ...(event ? { event } : { pubkey: recipient }),
+      amount,
+      relays: receiptRelayList.read
+        .slice(0, 4)
+        .concat(senderRelayList.write.slice(0, 3))
+        .concat(BIG_RELAY_URLS),
+      comment
+    })
+    // We sign the zap request but it will be included in the description tag of the receipt
+    await client.signer.signEvent(zapRequestDraft)
+
+    // Send Arkade payment via NWC
+    // The NWC server expects "invoice" parameter but will accept Arkade address (ark1...)
+    // For Arkade addresses, we must pass the amount since it's not encoded in the address
+    try {
+      console.log('Sending Arkade payment:', { arkadeAddress, amount })
+      console.log('Provider object:', this.provider)
+      console.log('Provider.client:', (this.provider as any).client)
+
+      // Access the internal NWC client
+      const nwcClient = (this.provider as any).client
+
+      if (!nwcClient) {
+        throw new Error('No NWC client found in provider')
+      }
+
+      // Use executeNip47Request to send a raw NIP-47 pay_invoice request with amount parameter
+      // This is the low-level method that allows us to pass the amount parameter
+      // which is required for Arkade addresses (since they don't encode the amount like BOLT11)
+      console.log('Calling executeNip47Request with pay_invoice method')
+      console.log('Parameters:', { invoice: arkadeAddress, amount })
+
+      const response = await nwcClient.executeNip47Request('pay_invoice', {
+        invoice: arkadeAddress,
+        amount
+      })
+
+      console.log('Arkade payment response:', response)
+      closeOuterModel?.()
+
+      // For Arkade, the response should contain the vtxo txid
+      // The wallet should return it in the preimage field or a custom field
+      const vtxoTxid = (response as any).vtxoTxid || response.preimage
+
+      if (!vtxoTxid) {
+        console.warn('No vtxoTxid in response, zap may have succeeded but tracking may fail')
+      }
+
+      // Listen for zap receipt
+      this.listenForArkadeZapReceipt(recipient, event?.id, senderRelayList)
+
+      return { vtxoTxid, arkadeAddress }
+    } catch (error) {
+      console.error('Arkade zap error:', error)
+      throw new Error(
+        `Arkade zap failed: ${error instanceof Error ? error.message : 'Unknown error'}. ` +
+        `Make sure your NWC wallet supports pay_invoice with amount parameter.`
+      )
+    }
+  }
+
+  private listenForArkadeZapReceipt(
+    recipient: string,
+    eventId: string | undefined,
+    senderRelayList: { read: string[]; write: string[] }
+  ) {
+    const filter: Filter = {
+      kinds: [kinds.Zap],
+      '#p': [recipient],
+      since: dayjs().subtract(1, 'minute').unix()
+    }
+    if (eventId) {
+      filter['#e'] = [eventId]
+    }
+
+    const subCloser = client.subscribe(
+      senderRelayList.write.concat(BIG_RELAY_URLS).slice(0, 4),
+      filter,
+      {
+        onevent: (evt) => {
+          const info = getZapInfoFromEvent(evt)
+          if (!info) return
+
+          // Check if this is our Arkade zap receipt
+          if (info.isArkade && info.arkadeVtxoTxid) {
+            console.log('Arkade zap receipt received:', info.arkadeVtxoTxid)
+            subCloser.close()
+          }
+        }
+      }
+    )
+
+    // Auto-close subscription after 2 minutes
+    setTimeout(() => {
+      subCloser.close()
+    }, 120000)
+  }
+
   async fetchRecentSupporters() {
     if (this.recentSupportersCache) {
       return this.recentSupportersCache

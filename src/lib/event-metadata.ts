@@ -3,7 +3,7 @@ import { TEmoji, TPollType, TRelayList, TRelaySet } from '@/types'
 import { Event, kinds } from 'nostr-tools'
 import { buildATag } from './draft-event'
 import { getReplaceableEventIdentifier } from './event'
-import { getAmountFromInvoice, getLightningAddressFromProfile } from './lightning'
+import { getAmountFromInvoice, getArkadeAddressFromProfile, getLightningAddressFromProfile } from './lightning'
 import { formatPubkey, pubkeyToNpub } from './pubkey'
 import { generateBech32IdFromETag, tagNameEquals } from './tag'
 import { isWebsocketUrl, normalizeHttpUrl, normalizeUrl } from './url'
@@ -67,6 +67,7 @@ export function getProfileFromEvent(event: Event) {
       lud06: profileObj.lud06,
       lud16: profileObj.lud16,
       lightningAddress: getLightningAddressFromProfile(profileObj),
+      arkade: getArkadeAddressFromProfile(profileObj),
       created_at: event.created_at
     }
   } catch (err) {
@@ -107,6 +108,9 @@ export function getZapInfoFromEvent(receiptEvent: Event) {
   let comment: string | undefined
   let description: string | undefined
   let preimage: string | undefined
+  let arkadeVtxoTxid: string | undefined
+  let isArkade: boolean = false
+
   try {
     receiptEvent.tags.forEach((tag) => {
       const [tagName, tagValue] = tag
@@ -130,10 +134,29 @@ export function getZapInfoFromEvent(receiptEvent: Event) {
         case 'preimage':
           preimage = tagValue
           break
+        case 'arkade':
+          // Arkade zap receipt: ["arkade", "vtxo-txid"]
+          arkadeVtxoTxid = tagValue
+          isArkade = true
+          break
+        case 'amount':
+          // For Arkade zaps, amount is in a separate tag
+          if (tagValue) {
+            amount = parseInt(tagValue)
+          }
+          break
       }
     })
-    if (!recipientPubkey || !invoice) return null
-    amount = invoice ? getAmountFromInvoice(invoice) : 0
+
+    // For Arkade zaps, we don't require a bolt11 invoice
+    if (!recipientPubkey) return null
+    if (!isArkade && !invoice) return null
+
+    // Get amount from invoice for Lightning zaps, or from amount tag for Arkade zaps
+    if (!isArkade && invoice) {
+      amount = getAmountFromInvoice(invoice)
+    }
+
     if (description) {
       try {
         const zapRequest = JSON.parse(description)
@@ -152,9 +175,11 @@ export function getZapInfoFromEvent(receiptEvent: Event) {
       eventId,
       originalEventId,
       invoice,
-      amount,
+      amount: amount || 0,
       comment,
-      preimage
+      preimage,
+      arkadeVtxoTxid,
+      isArkade
     }
   } catch {
     return null

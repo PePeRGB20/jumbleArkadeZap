@@ -253,13 +253,17 @@ class NoteStatsService {
   private addZapByEvent(evt: Event) {
     const info = getZapInfoFromEvent(evt)
     if (!info) return
-    const { originalEventId, senderPubkey, invoice, amount, comment } = info
+    const { originalEventId, senderPubkey, invoice, amount, comment, arkadeVtxoTxid, isArkade } = info
     if (!originalEventId || !senderPubkey) return
+
+    // For Arkade zaps, use vtxo txid as identifier; for Lightning, use invoice
+    const identifier = isArkade && arkadeVtxoTxid ? arkadeVtxoTxid : invoice
+    if (!identifier) return
 
     return this.addZap(
       senderPubkey,
       originalEventId,
-      invoice,
+      identifier,
       amount,
       comment,
       evt.created_at,

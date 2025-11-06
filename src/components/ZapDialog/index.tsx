@@ -15,11 +15,14 @@ import {
 } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { useNostr } from '@/providers/NostrProvider'
 import { useScreenSize } from '@/providers/ScreenSizeProvider'
 import { useZap } from '@/providers/ZapProvider'
+import client from '@/services/client.service'
 import lightning from '@/services/lightning.service'
 import noteStatsService from '@/services/note-stats.service'
+import { TProfile } from '@/types'
 import { Loader } from 'lucide-react'
 import { NostrEvent } from 'nostr-tools'
 import { Dispatch, SetStateAction, useEffect, useMemo, useRef, useState } from 'react'
@@ -140,6 +143,36 @@ function ZapDialogContent({
   const [sats, setSats] = useState(defaultAmount ?? defaultZapSats)
   const [comment, setComment] = useState(defaultComment ?? defaultZapComment)
   const [zapping, setZapping] = useState(false)
+  const [recipientProfile, setRecipientProfile] = useState<TProfile | null>(null)
+  const [loadingProfile, setLoadingProfile] = useState(true)
+  const [zapType, setZapType] = useState<'lightning' | 'arkade'>('lightning')
+
+  // Fetch recipient profile to check for Arkade address
+  useEffect(() => {
+    const loadProfile = async () => {
+      setLoadingProfile(true)
+      // Force fresh profile fetch (skipCache = true)
+      const profile = await client.fetchProfile(recipient, true)
+      console.log('ZapDialog - Loaded profile for', recipient, ':', profile)
+      console.log('  - Lightning address:', profile?.lightningAddress)
+      console.log('  - Arkade address:', profile?.arkade)
+      console.log('  - Profile object:', JSON.stringify(profile, null, 2))
+      setRecipientProfile(profile)
+      // Default to Arkade if only Arkade address is available
+      if (profile?.arkade && !profile?.lightningAddress) {
+        setZapType('arkade')
+        console.log('  - Defaulting to Arkade zap')
+      }
+      setLoadingProfile(false)
+    }
+    loadProfile()
+  }, [recipient])
+
+  const hasLightning = Boolean(recipientProfile?.lightningAddress)
+  const hasArkade = Boolean(recipientProfile?.arkade)
+  const showZapTypeSelector = hasLightning && hasArkade
+  const noPaymentMethod = !loadingProfile && !hasLightning && !hasArkade
+
   const presetAmounts = useMemo(() => {
     if (i18n.language.startsWith('zh')) {
       return [
@@ -180,15 +213,37 @@ function ZapDialogContent({
         throw new Error('You need to be logged in to zap')
       }
       setZapping(true)
-      const zapResult = await lightning.zap(pubkey, event ?? recipient, sats, comment, () =>
-        setOpen(false)
-      )
-      // user canceled
-      if (!zapResult) {
-        return
-      }
-      if (event) {
-        noteStatsService.addZap(pubkey, event.id, zapResult.invoice, sats, comment)
+
+      if (zapType === 'arkade') {
+        // Send Arkade zap
+        const arkadeResult = await lightning.arkadeZap(
+          pubkey,
+          event ?? recipient,
+          sats,
+          comment,
+          () => setOpen(false)
+        )
+        // user canceled
+        if (!arkadeResult) {
+          return
+        }
+        toast.success(`${t('Arkade zap sent')}! VTXO: ${arkadeResult.vtxoTxid.slice(0, 8)}...`)
+        if (event) {
+          // For Arkade zaps, use the arkade address as the "invoice" identifier
+          noteStatsService.addZap(pubkey, event.id, arkadeResult.arkadeAddress, sats, comment)
+        }
+      } else {
+        // Send Lightning zap
+        const zapResult = await lightning.zap(pubkey, event ?? recipient, sats, comment, () =>
+          setOpen(false)
+        )
+        // user canceled
+        if (!zapResult) {
+          return
+        }
+        if (event) {
+          noteStatsService.addZap(pubkey, event.id, zapResult.invoice, sats, comment)
+        }
       }
     } catch (error) {
       toast.error(`${t('Zap failed')}: ${(error as Error).message}`)
@@ -199,6 +254,49 @@ function ZapDialogContent({
 
   return (
     <>
+      {/* Zap type selector (Lightning vs Arkade) */}
+      {showZapTypeSelector && (
+        <div className="flex flex-col gap-2">
+          <Label>{t('Zap Type')}</Label>
+          <RadioGroup value={zapType} onValueChange={(val) => setZapType(val as 'lightning' | 'arkade')}>
+            <div className="flex items-center space-x-2">
+              <RadioGroupItem value="lightning" id="lightning" />
+              <Label htmlFor="lightning" className="font-normal cursor-pointer">
+                Lightning Network
+              </Label>
+            </div>
+            <div className="flex items-center space-x-2">
+              <RadioGroupItem value="arkade" id="arkade" />
+              <Label htmlFor="arkade" className="font-normal cursor-pointer">
+                Arkade (VTXO)
+              </Label>
+            </div>
+          </RadioGroup>
+        </div>
+      )}
+
+      {/* Show loading or info message */}
+      {loadingProfile && (
+        <div className="text-sm text-muted-foreground">
+          {t('Loading payment methods...')}
+        </div>
+      )}
+      {!loadingProfile && !showZapTypeSelector && hasArkade && !hasLightning && (
+        <div className="text-sm text-muted-foreground">
+          {t('This user only accepts Arkade zaps')}
+        </div>
+      )}
+      {!loadingProfile && !showZapTypeSelector && hasLightning && !hasArkade && (
+        <div className="text-sm text-muted-foreground">
+          {t('This user only accepts Lightning zaps')}
+        </div>
+      )}
+      {noPaymentMethod && (
+        <div className="text-sm text-destructive">
+          {t('This user has no payment method configured')}
+        </div>
+      )}
+
       {/* Sats slider or input */}
       <div className="flex flex-col items-center">
         <div className="flex justify-center w-full">
@@ -244,8 +342,13 @@ function ZapDialogContent({
         <Input id="comment" value={comment} onChange={(e) => setComment(e.target.value)} />
       </div>
 
-      <Button onClick={handleZap}>
-        {zapping && <Loader className="animate-spin" />} {t('Zap n sats', { n: sats })}
+      <Button onClick={handleZap} disabled={loadingProfile || noPaymentMethod || zapping}>
+        {(zapping || loadingProfile) && <Loader className="animate-spin" />}{' '}
+        {loadingProfile
+          ? t('Loading...')
+          : zapType === 'arkade'
+            ? t('Arkade Zap n sats', { n: sats })
+            : t('Zap n sats', { n: sats })}
       </Button>
     </>
   )

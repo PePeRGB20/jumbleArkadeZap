@@ -38,3 +38,11 @@ export function getLightningAddressFromProfile(profile: TProfile) {
 
   return lud16 || lud06 || undefined
 }
+
+export function getArkadeAddressFromProfile(profile: any): string | undefined {
+  // Extract Arkade address from profile (ark1...)
+  if (profile.arkade && typeof profile.arkade === 'string' && profile.arkade.startsWith('ark1')) {
+    return profile.arkade
+  }
+  return undefined
+}

@@ -1,6 +1,6 @@
 import { LONG_PRESS_THRESHOLD } from '@/constants'
 import { useNoteStatsById } from '@/hooks/useNoteStatsById'
-import { getLightningAddressFromProfile } from '@/lib/lightning'
+import { getArkadeAddressFromProfile, getLightningAddressFromProfile } from '@/lib/lightning'
 import { cn } from '@/lib/utils'
 import { useNostr } from '@/providers/NostrProvider'
 import { useZap } from '@/providers/ZapProvider'
@@ -37,7 +37,14 @@ export default function ZapButton({ event }: { event: Event }) {
       if (!profile) return
       if (pubkey === profile.pubkey) return
       const lightningAddress = getLightningAddressFromProfile(profile)
-      if (lightningAddress) setDisable(false)
+      const arkadeAddress = getArkadeAddressFromProfile(profile)
+      // Enable zap button if user has either Lightning or Arkade address
+      if (lightningAddress || arkadeAddress) {
+        setDisable(false)
+        console.log('ZapButton - Payment methods found:', { lightningAddress, arkadeAddress })
+      } else {
+        console.log('ZapButton - No payment method found for', profile.username)
+      }
     })
   }, [event])
 
